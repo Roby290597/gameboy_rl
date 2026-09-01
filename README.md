@@ -91,3 +91,4 @@ In `mario_env.py`, Funktion `_compute_reward`:
 Diese Gewichte lassen sich anpassen, falls der Agent sich merkwürdig
 verhält (z. B. zu vorsichtig ist oder Risiken für Münzen eingeht, die
 nicht lohnen).
+"# gameboy_rl" 
