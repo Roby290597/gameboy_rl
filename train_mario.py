@@ -59,7 +59,7 @@ def main():
             n_steps=512,
             batch_size=256,
             learning_rate=2.5e-4,
-            gamma=0.99,
+            gamma=0.99999,
             ent_coef=0.01,
             tensorboard_log=str(logs_dir),
         )

@@ -95,8 +95,8 @@ _ENEMY_RAW_TILES = (
 # Gegner auf oder knapp unter Marios Hoehe zaehlen als Gefahr - darueber
 # springen (Mario also hoeher als der Gegner) loest bewusst KEINE Strafe
 # aus, das ist ja der erwuenschte Ausweich-/Stomp-Weg.
-_ENEMY_DANGER_RADIUS = 2
-_ENEMY_PROXIMITY_PENALTY = 0.1
+_ENEMY_DANGER_RADIUS = 10 # 2
+_ENEMY_PROXIMITY_PENALTY = 0.5 # 0.1
  
 # Bonus, wenn in einem Schritt sowohl ein Gegner aus dem Sichtfeld
 # verschwindet als auch der Score steigt - starkes Indiz fuer "besiegt"
@@ -244,9 +244,9 @@ class MarioLandEnv(gym.Env):
         else:
             self._steps_since_progress += 1
  
-        reward += (score - self._last_score) * 0.02
-        reward += (coins - self._last_coins) * 1.0
-        reward -= 0.05  # kleine Zeitstrafe pro Schritt
+        reward += (score - self._last_score) *1.0 #* 0.02
+        reward += (coins - self._last_coins) *0.02 #* 1.0
+        reward -= 0.1 #0.05  # kleine Zeitstrafe pro Schritt
  
         # --- Gegner meiden bzw. besiegen -----------------------------------
         # game_area() enthaelt Hintergrund-Kacheln UND Sprites (Mario,
