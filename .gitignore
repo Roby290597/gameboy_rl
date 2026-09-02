@@ -1,0 +1,29 @@
+
+· GITIGNORE
+# ROMs (Copyright - nicht auf GitHub hochladen)
+*.gb
+*.gbc
+*.rtc
+*.ram
+ 
+# Trainings-Ausgaben (gross, aendern sich staendig, gehoeren nicht ins Repo)
+runs/
+checkpoints/
+ 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+ 
+# Virtuelle Umgebung
+venv/
+venv_win/
+.venv/
+ 
+# Editor-/OS-Kram
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+ 
