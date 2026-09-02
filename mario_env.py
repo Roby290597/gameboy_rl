@@ -1,17 +1,17 @@
 """
 Gymnasium-Environment fuer Super Mario Land (Game Boy), gebaut auf PyBoys
 eingebautem Game-Wrapper fuer dieses Spiel (pyboy.game_wrapper).
- 
+
 Der Wrapper liefert bereits fertig ausgelesene Werte wie Level-Fortschritt
 (X-Position), Leben, Score, Muenzen und ein sauberes Kachel-Raster des
 Bildschirms - dadurch ist hier (anders als beim Pokemon-Crystal-Versuch)
 KEINE eigene RAM-Adress-Suche noetig.
- 
+
 Beobachtung: 16x20-Kachelraster des Spielbereichs (ohne HUD), als flacher
 uint8-Vektor. Aktionen: eine kleine, sinnvolle Auswahl an Tastenkombinationen
 (rechts laufen, springen, rennen/Feuerball, etc.) statt aller moeglichen
 Tastenkombinationen einzeln.
- 
+
 Belohnung:
     + Fortschritt nach rechts (level_progress steigt)          -> Hauptsignal
     + Muenzen eingesammelt
@@ -24,9 +24,9 @@ Belohnung:
       -> kleine, mit der Naehe wachsende Strafe, Anreiz zum Ausweichen/Draufspringen
     - kleine Zeitstrafe pro Schritt (Anreiz, nicht zu trödeln)
 """
- 
+
 from __future__ import annotations
- 
+
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
@@ -47,8 +47,8 @@ from pyboy.plugins.game_wrapper_super_mario_land import (
     shell,
     spike,
 )
- 
- 
+
+
 # Jede Aktion ist die MENGE der Tasten, die waehrend dieses Schritts gehalten
 # werden sollen (nicht nur kurz angetippt). Der Sprung in Super Mario Land ist
 # wie im Original ueber die Haltedauer von A gesteuert: A nur 1 Frame gedrueckt
@@ -71,7 +71,7 @@ _ACTIONS: list[frozenset[int]] = [
 ACTION_NAMES = [
     "NOOP", "RIGHT", "RIGHT+A", "RIGHT+B", "RIGHT+A+B", "A", "LEFT", "DOWN",
 ]
- 
+
 _RELEASE_OF = {
     WindowEvent.PRESS_ARROW_UP: WindowEvent.RELEASE_ARROW_UP,
     WindowEvent.PRESS_ARROW_DOWN: WindowEvent.RELEASE_ARROW_DOWN,
@@ -80,7 +80,7 @@ _RELEASE_OF = {
     WindowEvent.PRESS_BUTTON_A: WindowEvent.RELEASE_BUTTON_A,
     WindowEvent.PRESS_BUTTON_B: WindowEvent.RELEASE_BUTTON_B,
 }
- 
+
 # Rohe Tile-IDs aller Gegnertypen (aus dem PyBoy-Wrapper uebernommen) plus
 # Stacheln (spike) als zusaetzliche Gefahr. "explosion" (Sterbe-Animation
 # eines Gegners) ist bewusst NICHT dabei, das ist kein Gegner mehr.
@@ -89,24 +89,24 @@ _RELEASE_OF = {
 _ENEMY_RAW_TILES = (
     goomba + koopa + plant + moth + flying_moth + sphinx + big_sphinx + fist + bill + projectiles + shell + spike
 )
- 
+
 # Wie viele Kacheln Abstand (horizontal) noch als "Gefahr" gilt, und wie
 # stark das pro Schritt bestraft wird (linear staerker, je naeher). Nur
 # Gegner auf oder knapp unter Marios Hoehe zaehlen als Gefahr - darueber
 # springen (Mario also hoeher als der Gegner) loest bewusst KEINE Strafe
 # aus, das ist ja der erwuenschte Ausweich-/Stomp-Weg.
-_ENEMY_DANGER_RADIUS = 10 # 2
-_ENEMY_PROXIMITY_PENALTY = 0.5 # 0.1
- 
+_ENEMY_DANGER_RADIUS = 2
+_ENEMY_PROXIMITY_PENALTY = 0.1
+
 # Bonus, wenn in einem Schritt sowohl ein Gegner aus dem Sichtfeld
 # verschwindet als auch der Score steigt - starkes Indiz fuer "besiegt"
 # (Sprung drauf, Feuerball) statt "aus dem Bildschirm gelaufen".
 _ENEMY_DEFEAT_BONUS = 5.0
- 
- 
+
+
 class MarioLandEnv(gym.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 60}
- 
+
     def __init__(
         self,
         rom_path: str,
@@ -114,6 +114,14 @@ class MarioLandEnv(gym.Env):
         frame_skip: int = 4,
         world_level: tuple[int, int] | None = None,
         max_steps_without_progress: int = 300,
+        reward_progress: float = 1.0,
+        reward_score: float = 0.02,
+        reward_coin: float = 1.0,
+        reward_time_penalty: float = 0.05,
+        reward_death: float = 25.0,
+        enemy_defeat_bonus: float = _ENEMY_DEFEAT_BONUS,
+        enemy_danger_radius: float = _ENEMY_DANGER_RADIUS,
+        enemy_proximity_penalty: float = _ENEMY_PROXIMITY_PENALTY,
     ):
         super().__init__()
         window = "null" if headless else "SDL2"
@@ -122,10 +130,10 @@ class MarioLandEnv(gym.Env):
             self.pyboy.set_emulation_speed(1)
         else:
             self.pyboy.set_emulation_speed(0)
- 
+
         self.game_wrapper = self.pyboy.game_wrapper
         self.game_wrapper.game_area_mapping(self.game_wrapper.mapping_compressed, 0)
- 
+
         # Kategorie-Werte (nicht die rohen Tile-IDs!) fuer Mario und alle
         # Gegnertypen INNERHALB der aktiven mapping_compressed-Tabelle, fuer
         # die Gegner-Erkennung in _compute_reward(). game_area() liefert
@@ -135,15 +143,27 @@ class MarioLandEnv(gym.Env):
         self._mario_category = int(mapping[base_scripts[0]])
         self._enemy_categories = tuple(sorted({int(mapping[t]) for t in _ENEMY_RAW_TILES}))
         self._last_enemy_count = 0
- 
+
         self._world_level = world_level
         self._frame_skip = frame_skip
         self._max_steps_without_progress = max_steps_without_progress
- 
+
+        # Belohnungsgewichte - konfigurierbar (siehe config.yaml/from_config),
+        # Standardwerte entsprechen der urspruenglichen, fest verdrahteten
+        # Belohnung.
+        self._reward_progress = reward_progress
+        self._reward_score = reward_score
+        self._reward_coin = reward_coin
+        self._reward_time_penalty = reward_time_penalty
+        self._reward_death = reward_death
+        self._enemy_defeat_bonus = enemy_defeat_bonus
+        self._enemy_danger_radius = enemy_danger_radius
+        self._enemy_proximity_penalty = enemy_proximity_penalty
+
         self.action_space = spaces.Discrete(len(_ACTIONS))
         # game_area() liefert ein 16x20-Raster (Zeilen x Spalten).
         self.observation_space = spaces.Box(low=0, high=27, shape=(16 * 20,), dtype=np.uint8)
- 
+
         self._started = False
         self._last_progress = 0
         self._steps_since_progress = 0
@@ -154,9 +174,40 @@ class MarioLandEnv(gym.Env):
         # gegen die neue Ziel-Aktion abgeglichen, damit z.B. A ueber mehrere
         # Schritte hinweg durchgehend gedrueckt bleiben kann (siehe _ACTIONS).
         self._held_buttons: frozenset[int] = frozenset()
- 
+
+    @classmethod
+    def from_config(
+        cls,
+        rom_path: str,
+        config: dict,
+        headless: bool = True,
+        world_level: tuple[int, int] | None = None,
+    ) -> "MarioLandEnv":
+        """Baut ein MarioLandEnv aus einem geladenen config.yaml-dict (siehe config.py).
+
+        Fehlende Werte fallen auf dieselben Standardwerte wie der normale
+        Konstruktor zurueck - config.yaml muss also nicht vollstaendig sein.
+        """
+        env_cfg = config.get("env", {}) or {}
+        reward_cfg = env_cfg.get("reward", {}) or {}
+        return cls(
+            rom_path,
+            headless=headless,
+            world_level=world_level,
+            frame_skip=env_cfg.get("frame_skip", 4),
+            max_steps_without_progress=env_cfg.get("max_steps_without_progress", 300),
+            reward_progress=reward_cfg.get("progress", 1.0),
+            reward_score=reward_cfg.get("score", 0.02),
+            reward_coin=reward_cfg.get("coin", 1.0),
+            reward_time_penalty=reward_cfg.get("time_penalty", 0.05),
+            reward_death=reward_cfg.get("death", 25.0),
+            enemy_defeat_bonus=reward_cfg.get("enemy_defeat_bonus", _ENEMY_DEFEAT_BONUS),
+            enemy_danger_radius=reward_cfg.get("enemy_danger_radius", _ENEMY_DANGER_RADIUS),
+            enemy_proximity_penalty=reward_cfg.get("enemy_proximity_penalty", _ENEMY_PROXIMITY_PENALTY),
+        )
+
     # -- Gymnasium API -----------------------------------------------------
- 
+
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         if not self._started:
@@ -164,27 +215,27 @@ class MarioLandEnv(gym.Env):
             self._started = True
         else:
             self.game_wrapper.reset_game()
- 
+
         self._last_progress = self.game_wrapper.level_progress
         self._steps_since_progress = 0
         self._last_lives = self.game_wrapper.lives_left
         self._last_score = self.game_wrapper.score
         self._last_coins = self.game_wrapper.coins
- 
+
         # Alle evtl. noch gehaltenen Tasten aus der vorherigen Episode loesen,
         # damit kein Zustand (z.B. "A haengt noch") in die neue Episode leckt.
         for held in self._held_buttons:
             self.pyboy.send_input(_RELEASE_OF[held])
         self._held_buttons = frozenset()
- 
+
         area = np.asarray(self.game_wrapper.game_area(), dtype=np.uint8)
         self._last_enemy_count = int(np.isin(area, self._enemy_categories).sum())
- 
+
         return self._get_obs(area), self._get_info()
- 
+
     def step(self, action: int):
         target = _ACTIONS[action]
- 
+
         # Nur die Tasten aendern, die sich gegenueber dem letzten Schritt
         # tatsaechlich unterscheiden. Eine Taste (z.B. A), die in beiden
         # Aktionen enthalten ist, bleibt so ueber mehrere step()-Aufrufe
@@ -195,30 +246,30 @@ class MarioLandEnv(gym.Env):
         for new in target - self._held_buttons:
             self.pyboy.send_input(new)
         self._held_buttons = target
- 
+
         for _ in range(self._frame_skip - 1):
             self.pyboy.tick(1, False)
         self.pyboy.tick(1, True)  # letzten Frame rendern, fuer Beobachtung/Anzeige
- 
+
         area = np.asarray(self.game_wrapper.game_area(), dtype=np.uint8)
         reward, terminated = self._compute_reward(area)
         truncated = self._steps_since_progress > self._max_steps_without_progress
- 
+
         return self._get_obs(area), reward, terminated, truncated, self._get_info()
- 
+
     def render(self):
         return np.array(self.pyboy.screen.ndarray)
- 
+
     def close(self):
         self.pyboy.stop(save=False)
- 
+
     # -- Hilfsfunktionen -----------------------------------------------------
- 
+
     def _get_obs(self, area: np.ndarray | None = None) -> np.ndarray:
         if area is None:
             area = np.asarray(self.game_wrapper.game_area(), dtype=np.uint8)
         return area.flatten()
- 
+
     def _get_info(self) -> dict:
         return {
             "world": self.game_wrapper.world,
@@ -228,26 +279,26 @@ class MarioLandEnv(gym.Env):
             "coins": self.game_wrapper.coins,
             "time_left": self.game_wrapper.time_left,
         }
- 
+
     def _compute_reward(self, area: np.ndarray) -> tuple[float, bool]:
         progress = self.game_wrapper.level_progress
         lives = self.game_wrapper.lives_left
         score = self.game_wrapper.score
         coins = self.game_wrapper.coins
- 
+
         reward = 0.0
- 
+
         progress_delta = progress - self._last_progress
-        reward += progress_delta * 1.0
+        reward += progress_delta * self._reward_progress
         if progress_delta > 0:
             self._steps_since_progress = 0
         else:
             self._steps_since_progress += 1
- 
-        reward += (score - self._last_score) *1.0 #* 0.02
-        reward += (coins - self._last_coins) *0.02 #* 1.0
-        reward -= 0.1 #0.05  # kleine Zeitstrafe pro Schritt
- 
+
+        reward += (score - self._last_score) * self._reward_score
+        reward += (coins - self._last_coins) * self._reward_coin
+        reward -= self._reward_time_penalty  # kleine Zeitstrafe pro Schritt
+
         # --- Gegner meiden bzw. besiegen -----------------------------------
         # game_area() enthaelt Hintergrund-Kacheln UND Sprites (Mario,
         # Gegner) als dieselben Kategorie-Zahlen, siehe __init__.
@@ -255,7 +306,7 @@ class MarioLandEnv(gym.Env):
         enemy_cells = np.argwhere(enemy_mask)
         enemy_count = int(enemy_cells.shape[0])
         mario_cells = np.argwhere(area == self._mario_category)
- 
+
         if mario_cells.size and enemy_cells.size:
             mario_row = mario_cells[:, 0].min()
             mario_col = mario_cells[:, 1].mean()
@@ -268,24 +319,24 @@ class MarioLandEnv(gym.Env):
             same_level = (row_diff >= 0) & (row_diff <= 1)
             if np.any(same_level):
                 nearest = float(col_diff[same_level].min())
-                if nearest <= _ENEMY_DANGER_RADIUS:
-                    reward -= _ENEMY_PROXIMITY_PENALTY * (_ENEMY_DANGER_RADIUS - nearest + 1)
- 
+                if nearest <= self._enemy_danger_radius:
+                    reward -= self._enemy_proximity_penalty * (self._enemy_danger_radius - nearest + 1)
+
         # Bonus: Ein Gegner ist verschwunden UND der Score ist im selben
         # Schritt gestiegen -> sehr wahrscheinlich besiegt (draufgesprungen
         # oder mit Feuerball getroffen), nicht nur aus dem Bild gelaufen.
         if enemy_count < self._last_enemy_count and score > self._last_score:
-            reward += _ENEMY_DEFEAT_BONUS
+            reward += self._enemy_defeat_bonus
         self._last_enemy_count = enemy_count
- 
+
         terminated = False
         if lives < self._last_lives or self.game_wrapper.game_over():
-            reward -= 25.0
+            reward -= self._reward_death
             terminated = True
- 
+
         self._last_progress = progress
         self._last_lives = lives
         self._last_score = score
         self._last_coins = coins
- 
+
         return reward, terminated

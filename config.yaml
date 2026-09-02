@@ -1,0 +1,43 @@
+# Hyperparameter fuer das Super-Mario-Land-RL-Projekt, an einer Stelle
+# gesammelt. train_mario.py und watch_agent.py lesen ihre Standardwerte von
+# hier - Kommandozeilen-Optionen (z.B. --steps) ueberschreiben weiterhin
+# einzelne Werte, falls angegeben.
+
+env:
+  # Wie viele Frames pro step()-Aufruf uebersprungen werden (die gewaehlte
+  # Aktion bleibt so lange gehalten, bevor Beobachtung/Belohnung berechnet
+  # werden). Hoeher = schnelleres Training, aber grobmotorischere Steuerung.
+  frame_skip: 4
+
+  # Episode wird abgebrochen (truncated), wenn so viele Schritte am Stueck
+  # ohne Fortschritt (level_progress) vergehen.
+  max_steps_without_progress: 300
+
+  reward:
+    progress: 1.0               # pro Kachel Fortschritt nach rechts (Hauptsignal)
+    score: 0.02                 # pro Score-Punkt (Gegner besiegt, Bonusgegenstaende, ...)
+    coin: 1.0                   # pro eingesammelter Muenze
+    time_penalty: 0.05          # Abzug pro Schritt (Zeitstrafe, damit der Agent nicht troedelt)
+    death: 25.0                 # Abzug bei Lebensverlust / Game Over (Episode endet dann)
+    enemy_defeat_bonus: 5.0     # Zusatz-Bonus, wenn ein Gegner in der Naehe besiegt wird
+    enemy_danger_radius: 2      # Kacheln Abstand, bis zu der ein Gegner als Gefahr zaehlt
+    enemy_proximity_penalty: 0.1  # Staerke der Naehe-Strafe (pro Kachel Naehe zum Gegner)
+
+training:
+  steps: 500000            # Gesamtzahl der Trainings-Zeitschritte
+  envs: 4                  # Anzahl paralleler Emulator-Instanzen
+  checkpoint_every: 25000  # Alle wie viele Schritte ein Checkpoint gespeichert wird
+  run_name: mario_ppo      # Name fuer Checkpoint-Ordner und Tensorboard-Log
+
+  # PPO-Hyperparameter (stable-baselines3), siehe
+  # https://stable-baselines3.readthedocs.io/en/master/modules/ppo.html
+  ppo:
+    n_steps: 512
+    batch_size: 256
+    learning_rate: 0.00025
+    gamma: 0.99
+    ent_coef: 0.01
+
+watch:
+  episodes: 5   # Anzahl Episoden, die watch_agent.py standardmaessig zeigt
+  speed: 1      # Emulationsgeschwindigkeit (1=normal, 0=ungebremst, max. 5)
