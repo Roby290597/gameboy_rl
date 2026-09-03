@@ -79,8 +79,8 @@ def main():
             verbose=1,
             n_steps=ppo_cfg.get("n_steps", 512),
             batch_size=ppo_cfg.get("batch_size", 256),
-            learning_rate=ppo_cfg.get("learning_rate", 2.5e-4),
-            gamma=ppo_cfg.get("gamma", 0.99),
+            learning_rate=ppo_cfg.get("learning_rate", 0.00005),
+            gamma=ppo_cfg.get("gamma", 0.99999),
             ent_coef=ppo_cfg.get("ent_coef", 0.01),
             tensorboard_log=str(logs_dir),
         )

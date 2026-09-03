@@ -19,9 +19,39 @@ env:
     coin: 1.0                   # pro eingesammelter Muenze
     time_penalty: 0.05          # Abzug pro Schritt (Zeitstrafe, damit der Agent nicht troedelt)
     death: 25.0                 # Abzug bei Lebensverlust / Game Over (Episode endet dann)
-    enemy_defeat_bonus: 5.0     # Zusatz-Bonus, wenn ein Gegner in der Naehe besiegt wird
-    enemy_danger_radius: 2      # Kacheln Abstand, bis zu der ein Gegner als Gefahr zaehlt
-    enemy_proximity_penalty: 0.1  # Staerke der Naehe-Strafe (pro Kachel Naehe zum Gegner)
+    # Gezieltes Springen (2026-09-03, auf Vorschlag des Nutzers): Mario soll
+    # normal laufen und nur dann springen, wenn tatsaechlich ein Gegner, ein
+    # festes Hindernis oder eine Schlucht in den naechsten `jump_lookahead`
+    # Spalten VORAUS erkannt wird (siehe mario_env.py-Docstring/_compute_reward).
+    # Ist nichts davon der Fall, kostet Springen `jump_cost`; ist etwas davon
+    # der Fall, entfaellt die Strafe und es gibt stattdessen `jump_bonus`.
+    jump_lookahead: 4           # wie viele Kacheln voraus geprueft werden
+    jump_cost: 0.05             # Abzug pro Schritt A gehalten OHNE Grund voraus
+    jump_bonus: 0.02            # Bonus pro Schritt A gehalten MIT Grund voraus
+                                 # Falls nach einem Neu-Training immer noch staendig
+                                 # gehoppelt wird: jump_cost hochdrehen (z.B. 0.08-0.15)
+                                 # und/oder jump_bonus senken, bevor am Code etwas
+                                 # geaendert wird.
+
+    # Manche Hindernisse (hohe Pfeifen etc.) brauchen einen laenger gehaltenen,
+    # hohen Sprung statt nur einen kurzen Hueper - Sprunghoehe haengt direkt
+    # von der Haltedauer von A ab. Einmaliger Zusatzbonus, sobald A waehrend
+    # eines erkannten Grundes so viele Schritte am Stueck gehalten wurde:
+    sustained_jump_steps: 4     # nach wie vielen Schritten Dauerhalten der Bonus greift
+    sustained_jump_bonus: 0.1   # Hoehe des einmaligen Zusatzbonus
+
+    # Bonus fuers tatsaechliche Besiegen eines Gegners (Sprung drauf/Feuerball) -
+    # unabhaengig vom gezielten Springen oben, reine Belohnung fuer den Erfolg.
+    enemy_defeat_bonus: 5.0
+
+    # Die AELTERE Gegner-Naehe-Strafe bleibt als Mechanik erhalten, ist aber
+    # auf 0 gestellt: Sie hat vor dem gezielten Springen oben zum Dauerhoppeln
+    # beigetragen (Springen war die einzige Moeglichkeit, ihr zu entgehen) und
+    # wuerde jetzt denselben Fall doppelt bestrafen/belohnen. Nur bei Bedarf
+    # (z.B. falls der Agent trotz gezieltem Springen zu nah an Gegner
+    # herangeht) wieder hochdrehen (z.B. 0.05-0.1).
+    enemy_danger_radius: 2
+    enemy_proximity_penalty: 0.0
 
 training:
   steps: 500000            # Gesamtzahl der Trainings-Zeitschritte

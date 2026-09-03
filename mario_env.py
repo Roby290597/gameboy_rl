@@ -19,10 +19,49 @@ Belohnung:
     + zusaetzlicher Bonus, wenn ein Gegner in der Naehe verschwindet UND
       gleichzeitig der Score steigt (= sehr wahrscheinlich besiegt)
     + Level geschafft (naechste Welt/Level erreicht)            -> grosser Bonus
+    + kleiner Bonus fuers Springen, wenn GENAU DANN tatsaechlich ein Gegner,
+      Hindernis oder eine Schlucht voraus ist ("gezielter Sprung")
     - Leben verloren / Game Over                                -> grosse Strafe
     - Gegner auf gleicher Hoehe in der Naehe (nicht darueber gesprungen)
       -> kleine, mit der Naehe wachsende Strafe, Anreiz zum Ausweichen/Draufspringen
+      (Standardgewicht 0 - siehe "Gezieltes Springen" unten)
     - kleine Zeitstrafe pro Schritt (Anreiz, nicht zu trödeln)
+    - kleine Strafe fuer jeden Schritt, in dem A/Sprung gehalten wird, WENN
+      dabei kein Gegner/Hindernis/keine Schlucht voraus ist
+      -> ohne das ist Dauerspringen "kostenlos" (siehe unten), der Agent lernt
+         sonst staendiges Hoppeln statt normal zu laufen
+
+Warum die Sprung-Strafe noetig ist: Ohne eigene Kosten fuers Springen ist
+"immer A gedrueckt halten" reward-neutral bis reward-positiv, egal ob gerade
+wirklich ein Grund zum Springen besteht - PPO entdeckt das zuverlaessig und
+der Agent hoppelt dann durchgehend, anstatt normal zu laufen.
+
+Gezieltes Springen (2026-09-03): Statt Springen pauschal zu bestrafen, wird
+in _compute_reward() pro Schritt geprueft, ob im Kachelraster VORAUS (die
+naechsten `jump_lookahead` Spalten rechts von Mario) ein Gegner auf Marios
+Hoehe, ein festes Hindernis (z.B. Pfeife/Block) auf Marios Hoehe, oder eine
+Schlucht (keine Bodenkachel in der zuletzt bekannten Boden-Reihe) erkannt
+wird. Nur wenn KEINS davon zutrifft, kostet Springen etwas (`jump_cost`);
+ist tatsaechlich etwas voraus, entfaellt die Strafe und es gibt stattdessen
+einen kleinen Bonus (`jump_bonus`). Das soll den Agenten direkt darauf
+trimmen, normal zu laufen und nur dann zu springen, wenn es noetig ist -
+anstatt (wie bei der alten pauschalen Sprung-Strafe) indirekt ueber
+Kosten/Nutzen-Abwaegung dorthin zu finden. Die aeltere, umgebungsweite
+Gegner-Naehe-Strafe (`enemy_proximity_penalty`) bleibt als Mechanik erhalten,
+ist standardmaessig aber auf 0 gestellt, um nicht mit diesem gezielteren
+Signal zu kollidieren (beide bestrafen sonst denselben Fall doppelt).
+
+Sustained-Jump-Bonus (2026-09-03): Manche Hindernisse (z.B. hohe Pfeifen)
+brauchen einen laenger gehaltenen, hohen Sprung statt nur einen kurzen
+Hueper - die Sprunghoehe haengt direkt von der Haltedauer von A ab. Eine
+verlaessliche Kachel-basierte Messung "wie hoch genau ist dieses Hindernis"
+war nicht sauber von normalem, flachem Terrain zu unterscheiden (per
+Stichprobe im echten Spiel geprueft, siehe Projekt-Notizen), daher gibt es
+stattdessen einen einmaligen Zusatzbonus (`sustained_jump_bonus`), sobald A
+waehrend eines erkannten Grundes `sustained_jump_steps` Schritte am Stueck
+durchgehend gehalten wurde - unabhaengig von der tatsaechlichen
+Hindernishoehe ist laenger halten immer die richtige Strategie, um
+ueberhaupt eine hoehere Sprungoption auszuprobieren.
 """
 
 from __future__ import annotations
@@ -119,6 +158,11 @@ class MarioLandEnv(gym.Env):
         reward_coin: float = 1.0,
         reward_time_penalty: float = 0.05,
         reward_death: float = 25.0,
+        reward_jump_cost: float = 0.02,
+        reward_jump_bonus: float = 0.02,
+        reward_sustained_jump_bonus: float = 0.1,
+        sustained_jump_steps: int = 4,
+        jump_lookahead: int = 4,
         enemy_defeat_bonus: float = _ENEMY_DEFEAT_BONUS,
         enemy_danger_radius: float = _ENEMY_DANGER_RADIUS,
         enemy_proximity_penalty: float = _ENEMY_PROXIMITY_PENALTY,
@@ -156,6 +200,11 @@ class MarioLandEnv(gym.Env):
         self._reward_coin = reward_coin
         self._reward_time_penalty = reward_time_penalty
         self._reward_death = reward_death
+        self._reward_jump_cost = reward_jump_cost
+        self._reward_jump_bonus = reward_jump_bonus
+        self._reward_sustained_jump_bonus = reward_sustained_jump_bonus
+        self._sustained_jump_steps = sustained_jump_steps
+        self._jump_lookahead = jump_lookahead
         self._enemy_defeat_bonus = enemy_defeat_bonus
         self._enemy_danger_radius = enemy_danger_radius
         self._enemy_proximity_penalty = enemy_proximity_penalty
@@ -174,6 +223,14 @@ class MarioLandEnv(gym.Env):
         # gegen die neue Ziel-Aktion abgeglichen, damit z.B. A ueber mehrere
         # Schritte hinweg durchgehend gedrueckt bleiben kann (siehe _ACTIONS).
         self._held_buttons: frozenset[int] = frozenset()
+        # Zeilen-Index der zuletzt unter Mario erkannten festen Bodenkachel
+        # (fuer die Schlucht-Erkennung waehrend eines Sprungs, siehe
+        # _compute_reward). None = noch nicht bekannt (z.B. direkt nach reset()).
+        self._ground_row: int | None = None
+        # Wie viele Schritte am Stueck A gehalten wurde, WAEHREND ein Grund
+        # dafuer voraus war (siehe _compute_reward) - fuer den Sustained-
+        # Jump-Bonus, der laengeres Halten (= hoeherer Sprung) foerdert.
+        self._consecutive_jump_ahead_steps = 0
 
     @classmethod
     def from_config(
@@ -201,6 +258,11 @@ class MarioLandEnv(gym.Env):
             reward_coin=reward_cfg.get("coin", 1.0),
             reward_time_penalty=reward_cfg.get("time_penalty", 0.05),
             reward_death=reward_cfg.get("death", 25.0),
+            reward_jump_cost=reward_cfg.get("jump_cost", 0.02),
+            reward_jump_bonus=reward_cfg.get("jump_bonus", 0.02),
+            reward_sustained_jump_bonus=reward_cfg.get("sustained_jump_bonus", 0.1),
+            sustained_jump_steps=reward_cfg.get("sustained_jump_steps", 4),
+            jump_lookahead=reward_cfg.get("jump_lookahead", 4),
             enemy_defeat_bonus=reward_cfg.get("enemy_defeat_bonus", _ENEMY_DEFEAT_BONUS),
             enemy_danger_radius=reward_cfg.get("enemy_danger_radius", _ENEMY_DANGER_RADIUS),
             enemy_proximity_penalty=reward_cfg.get("enemy_proximity_penalty", _ENEMY_PROXIMITY_PENALTY),
@@ -227,6 +289,8 @@ class MarioLandEnv(gym.Env):
         for held in self._held_buttons:
             self.pyboy.send_input(_RELEASE_OF[held])
         self._held_buttons = frozenset()
+        self._ground_row = None
+        self._consecutive_jump_ahead_steps = 0
 
         area = np.asarray(self.game_wrapper.game_area(), dtype=np.uint8)
         self._last_enemy_count = int(np.isin(area, self._enemy_categories).sum())
@@ -307,10 +371,17 @@ class MarioLandEnv(gym.Env):
         enemy_count = int(enemy_cells.shape[0])
         mario_cells = np.argwhere(area == self._mario_category)
 
+        mario_row_top = mario_row_bottom = None
+        mario_col = None
+        mario_col_max = None
+        if mario_cells.size:
+            mario_row_top = int(mario_cells[:, 0].min())
+            mario_row_bottom = int(mario_cells[:, 0].max())
+            mario_col = float(mario_cells[:, 1].mean())
+            mario_col_max = int(mario_cells[:, 1].max())
+
         if mario_cells.size and enemy_cells.size:
-            mario_row = mario_cells[:, 0].min()
-            mario_col = mario_cells[:, 1].mean()
-            row_diff = enemy_cells[:, 0].astype(np.int32) - int(mario_row)
+            row_diff = enemy_cells[:, 0].astype(np.int32) - mario_row_top
             col_diff = np.abs(enemy_cells[:, 1].astype(np.float32) - mario_col)
             # Nur Gegner auf oder knapp unter Marios Hoehe zaehlen als
             # Gefahr. Ist Mario hoeher (row_diff < 0, z.B. durch Sprung),
@@ -321,6 +392,93 @@ class MarioLandEnv(gym.Env):
                 nearest = float(col_diff[same_level].min())
                 if nearest <= self._enemy_danger_radius:
                     reward -= self._enemy_proximity_penalty * (self._enemy_danger_radius - nearest + 1)
+
+        # --- Gezieltes Springen: nur dann kein Kostenpflicht/Bonus, wenn --
+        # --- tatsaechlich ein Gegner, Hindernis oder eine Schlucht voraus ist
+        threat_ahead = False
+        if mario_col_max is not None:
+            n_cols = area.shape[1]
+            lookahead_cols = range(
+                mario_col_max + 1, min(mario_col_max + 1 + self._jump_lookahead, n_cols)
+            )
+
+            # Bodenreihe direkt unter Mario merken, sobald er sichtbar auf
+            # einer festen Kachel steht - das ist die Referenz fuer die
+            # Schlucht-Erkennung, auch waehrend er gerade in der Luft ist
+            # (die Bodenlinie selbst aendert sich beim Springen ja nicht).
+            n_rows = area.shape[0]
+            below_row = mario_row_bottom + 1
+            if below_row < n_rows:
+                col_idx = min(max(int(round(mario_col)), 0), area.shape[1] - 1)
+                below_cell = int(area[below_row, col_idx])
+                if below_cell != 0 and below_cell != self._mario_category:
+                    self._ground_row = below_row
+
+            if lookahead_cols:
+                cols = list(lookahead_cols)
+
+                # Gegner auf Marios Hoehe, VORAUS (nicht hinter ihm) und
+                # innerhalb der Vorschau-Distanz.
+                if enemy_cells.size:
+                    e_row_diff = enemy_cells[:, 0].astype(np.int32) - mario_row_top
+                    e_col_diff = enemy_cells[:, 1].astype(np.float32) - mario_col
+                    ahead_enemy = (
+                        (e_row_diff >= 0) & (e_row_diff <= 1)
+                        & (e_col_diff > 0) & (e_col_diff <= self._jump_lookahead)
+                    )
+                    if np.any(ahead_enemy):
+                        threat_ahead = True
+
+                # Festes Hindernis (z.B. Pfeife/Block) auf Marios eigener
+                # Hoehe voraus - jede nicht-leere, nicht-Mario-Kachel in
+                # Marios Zeilenspanne zaehlt.
+                if not threat_ahead:
+                    row_span = area[mario_row_top : mario_row_bottom + 1, cols]
+                    solid = (row_span != 0) & (row_span != self._mario_category)
+                    if np.any(solid):
+                        threat_ahead = True
+
+                # Schlucht: in der zuletzt bekannten Bodenreihe sind alle
+                # Vorschau-Spalten leer (keine Kachel = kein Boden).
+                if not threat_ahead and self._ground_row is not None and self._ground_row < n_rows:
+                    ground_span = area[self._ground_row, cols]
+                    if np.all(ground_span == 0):
+                        threat_ahead = True
+
+        # Kleine Kosten fuers Springen OHNE erkennbaren Grund voraus (siehe
+        # Modul-Docstring): ohne das ist A-gedrueckt-halten reward-neutral
+        # bis reward-positiv und der Agent lernt staendiges Hoppeln statt
+        # normal zu laufen. Ist tatsaechlich etwas voraus, entfaellt die
+        # Strafe und es gibt stattdessen einen kleinen Bonus. Nur EIN fixer
+        # Betrag, egal ob A allein oder in Kombination (Aktionen 2/4/5) gehalten wird.
+        jumping = WindowEvent.PRESS_BUTTON_A in self._held_buttons
+        if jumping and threat_ahead:
+            self._consecutive_jump_ahead_steps += 1
+        else:
+            self._consecutive_jump_ahead_steps = 0
+
+        if jumping:
+            if threat_ahead:
+                reward += self._reward_jump_bonus
+                # Manche Hindernisse (z.B. hohe Pfeifen) brauchen einen
+                # laenger gehaltenen, hohen Sprung statt nur einen kurzen
+                # Hueper - die Sprunghoehe haengt in Super Mario Land direkt
+                # von der Haltedauer von A ab (siehe Bugfix "hohe Sprünge"
+                # oben). Da sich "wie hoch ist dieses Hindernis" aus dem
+                # Kachelraster nicht zuverlaessig messen liess (normales
+                # flaches Terrain und echte Hindernisse waren dabei nicht
+                # sauber unterscheidbar, siehe Projekt-Notizen), wird
+                # stattdessen direkt das laengere DURCHGEHENDE Halten von A
+                # waehrend ein Grund voraus ist belohnt - das ist unabhaengig
+                # von der Hindernishoehe immer die richtige Strategie, um
+                # ueberhaupt eine hoehere Sprungoption auszuprobieren. Nur
+                # EIN einmaliger Bonus beim Erreichen der Schwelle (nicht pro
+                # weiterem Schritt danach), damit blosses Dauerhalten nicht
+                # zusaetzlich belohnt wird.
+                if self._consecutive_jump_ahead_steps == self._sustained_jump_steps:
+                    reward += self._reward_sustained_jump_bonus
+            else:
+                reward -= self._reward_jump_cost
 
         # Bonus: Ein Gegner ist verschwunden UND der Score ist im selben
         # Schritt gestiegen -> sehr wahrscheinlich besiegt (draufgesprungen
