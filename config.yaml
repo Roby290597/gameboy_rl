@@ -37,7 +37,7 @@ env:
     # hohen Sprung statt nur einen kurzen Hueper - Sprunghoehe haengt direkt
     # von der Haltedauer von A ab. Einmaliger Zusatzbonus, sobald A waehrend
     # eines erkannten Grundes so viele Schritte am Stueck gehalten wurde:
-    sustained_jump_steps: 4     # nach wie vielen Schritten Dauerhalten der Bonus greift
+    sustained_jump_steps: 2   # nach wie vielen Schritten Dauerhalten der Bonus greift
     sustained_jump_bonus: 0.1   # Hoehe des einmaligen Zusatzbonus
 
     # Bonus fuers tatsaechliche Besiegen eines Gegners (Sprung drauf/Feuerball) -
@@ -50,7 +50,7 @@ env:
     # wuerde jetzt denselben Fall doppelt bestrafen/belohnen. Nur bei Bedarf
     # (z.B. falls der Agent trotz gezieltem Springen zu nah an Gegner
     # herangeht) wieder hochdrehen (z.B. 0.05-0.1).
-    enemy_danger_radius: 2
+    enemy_danger_radius: 3
     enemy_proximity_penalty: 0.0
 
 training:

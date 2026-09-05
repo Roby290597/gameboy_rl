@@ -24,7 +24,7 @@ from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 
 from config import load_config
-from mario_env import MarioLandEnv
+from mario_env_CNN import MarioLandEnv
 
 
 def make_env(rom_path: str, config: dict):
